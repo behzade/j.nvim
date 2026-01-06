@@ -1,0 +1,26 @@
+{
+  "name": "j.nvim",
+  "version": "0.0.0",
+  "type": "module",
+  "bin": {
+    "j": "dist/index.node.js"
+  },
+  "scripts": {
+    "dev:bun": "bun run src/j/index.bun.ts",
+    "dev:node": "node --loader tsx src/j/index.node.ts",
+    "build:bun": "bun build src/j/index.bun.ts --compile --outfile dist/j",
+    "build:node": "tsup src/j/index.node.ts --format esm --platform node --out-dir dist --banner '#!/usr/bin/env node'",
+    "install:local": "npm run build:node && mkdir -p ~/.local/bin && install -m 755 dist/index.node.js ~/.local/bin/j"
+  },
+  "dependencies": {
+    "@effect/platform": "^0.94.1",
+    "@effect/platform-bun": "^0.87.0",
+    "@effect/platform-node": "^0.104.0",
+    "effect": "^3.10.7"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "tsup": "^8.3.5",
+    "tsx": "^4.19.4"
+  }
+}
