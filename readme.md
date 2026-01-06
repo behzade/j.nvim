@@ -6,7 +6,7 @@ Personal journal CLI (`j`) plus a Neovim plugin for browsing notes.
 
 Runtime options:
 - Bun: `bun run src/j/index.bun.ts`
-- Node: `node --loader tsx src/j/index.node.ts`
+- Node: `node --import tsx src/j/index.node.ts`
 
 Build outputs:
 - Bun binary: `npm run build:bun` (writes `dist/j`)

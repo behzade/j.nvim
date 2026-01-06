@@ -7,7 +7,7 @@
   },
   "scripts": {
     "dev:bun": "bun run src/j/index.bun.ts",
-    "dev:node": "node --loader tsx src/j/index.node.ts",
+    "dev:node": "node --import tsx src/j/index.node.ts",
     "build:bun": "bun build src/j/index.bun.ts --compile --outfile dist/j",
     "build:node": "tsup src/j/index.node.ts --format esm --platform node --out-dir dist --banner '#!/usr/bin/env node'",
     "install:local": "npm run build:node && mkdir -p ~/.local/bin && install -m 755 dist/index.node.js ~/.local/bin/j"
