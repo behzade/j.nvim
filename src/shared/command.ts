@@ -2,9 +2,6 @@ import { Command } from "@effect/platform";
 import * as Chunk from "effect/Chunk";
 import { Effect } from "effect";
 import * as Stream from "effect/Stream";
-import * as fs from "node:fs";
-import * as os from "node:os";
-import * as path from "node:path";
 
 export type CommandResult = {
   stdout: string;
@@ -42,8 +39,6 @@ const buildCommand = (
 
   return command;
 };
-
-const escapeShell = (s: string) => `'${s.replace(/'/g, "'\\''")}'`;
 
 export const commandExists = (name: string) =>
   Command.exitCode(Command.make("which", name)).pipe(
@@ -97,27 +92,4 @@ export const runCommandInteractive = (
     const exitCode = yield* Command.exitCode(command);
 
     return Number(exitCode);
-  });
-
-export const runCommandWithInputFile = (
-  cmd: string,
-  args: string[],
-  inputContent: string
-) =>
-  Effect.gen(function* () {
-    const tmpDir = os.tmpdir();
-    const inputPath = path.join(
-      tmpDir,
-      `j-input-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`
-    );
-    yield* Effect.promise(() => fs.promises.writeFile(inputPath, inputContent, "utf8"));
-
-    const escapedArgs = args.map(escapeShell).join(" ");
-    const shellCmd = `${escapeShell(cmd)} ${escapedArgs} < ${escapeShell(inputPath)}`;
-
-    try {
-      yield* runCommandInteractive("sh", ["-c", shellCmd]);
-    } finally {
-      yield* Effect.promise(() => fs.promises.unlink(inputPath).catch(() => undefined));
-    }
   });
