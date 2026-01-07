@@ -169,14 +169,10 @@ const dateArg = Options.boolean("date", { aliases: ["d"] }).pipe(
   Options.optional,
   Options.withDescription("Select entry by date (fzf + fd)")
 );
-const searchArg = Options.boolean("search", { aliases: ["s"] }).pipe(
+const searchArg = Options.text("search").pipe(
+  Options.withAlias("s"),
   Options.optional,
-  Options.withDescription("Search entries by content (fzf + rg) [full scan]")
-);
-const queryArg = Options.text("query").pipe(
-  Options.withAlias("q"),
-  Options.optional,
-  Options.withDescription("Search query (required for --search --json)")
+  Options.withDescription("Search entries by content (fzf + rg). Query required for --json")
 );
 const limitArg = Options.text("limit").pipe(
   Options.optional,
@@ -215,12 +211,11 @@ const slugArg = Options.text("slug").pipe(
 type ParsedOptions = {
   json: boolean | undefined;
   date: boolean | undefined;
-  search: boolean | undefined;
+  search: string | undefined;
   timeline: boolean | undefined;
   continue: boolean | undefined;
   tag: string | undefined;
   note: string | undefined;
-  query: string | undefined;
   limit: string | undefined;
   extract: string | undefined;
   sections: string | undefined;
@@ -230,12 +225,11 @@ type ParsedOptions = {
 type ParsedOptionValues = {
   json: Option.Option<boolean>;
   date: Option.Option<boolean>;
-  search: Option.Option<boolean>;
+  search: Option.Option<string>;
   timeline: Option.Option<boolean>;
   continue: Option.Option<boolean>;
   tag: Option.Option<string>;
   note: Option.Option<string>;
-  query: Option.Option<string>;
   limit: Option.Option<string>;
   extract: Option.Option<string>;
   sections: Option.Option<string>;
@@ -286,7 +280,6 @@ const parseArgs = (
       json: jsonArg,
       date: dateArg,
       search: searchArg,
-      query: queryArg,
       limit: limitArg,
       timeline: timelineArg,
       continue: continueArg,
@@ -333,7 +326,6 @@ const parseArgs = (
       continue: getOpt(parsed.continue),
       tag: getOpt(parsed.tag),
       note: getOpt(parsed.note),
-      query: getOpt(parsed.query),
       limit: getOpt(parsed.limit),
       extract: getOpt(parsed.extract),
       sections: getOpt(parsed.sections),
@@ -409,7 +401,7 @@ export const main = Effect.gen(function* () {
 
   const mode = parsed.date
     ? "date"
-    : parsed.search
+    : parsed.search !== undefined
       ? "search"
       : parsed.timeline
         ? "timeline"
@@ -440,10 +432,10 @@ export const main = Effect.gen(function* () {
         break;
       }
       case "search": {
-        const query = parsed.query?.trim() ?? "";
+        const query = parsed.search?.trim() ?? "";
         if (!query) {
           return yield* Effect.fail(
-            new Error("Missing search query. Use --query <text> with --search --json.")
+            new Error("Missing search query. Use --search <text> with --json.")
           );
         }
         const searchLimit = limit ?? DEFAULT_SEARCH_LIMIT;
@@ -533,7 +525,7 @@ export const main = Effect.gen(function* () {
       yield* searchByDate(parsed.tag);
       break;
     case "search":
-      yield* searchByContent(parsed.query);
+      yield* searchByContent(parsed.search);
       break;
     case "timeline":
       yield* timelineView(parsed.tag);

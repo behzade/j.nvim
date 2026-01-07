@@ -3,7 +3,7 @@ import { Effect } from "effect";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { runCommand, runCommandInteractive } from "../shared/command";
+import { commandExists, runCommand, runCommandInteractive } from "../shared/command";
 
 type PathOps = {
   join: (...segments: string[]) => string;
@@ -26,6 +26,32 @@ const getHomeDir = Effect.sync(() => {
   const home = process.env.HOME ?? process.env.USERPROFILE ?? ".";
   return home || ".";
 });
+
+const requireCommand = (name: string) =>
+  Effect.gen(function* () {
+    const exists = yield* commandExists(name);
+    if (!exists) {
+      return yield* Effect.fail(
+        new Error(`Missing dependency: ${name}. Ensure it is installed and on PATH.`)
+      );
+    }
+  });
+
+const writeFileAtomic = (filePath: string, content: string) =>
+  Effect.promise(async () => {
+    const dir = path.dirname(filePath);
+    const tempPath = path.join(
+      dir,
+      `.j-tmp-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`
+    );
+    await fs.promises.writeFile(tempPath, content, "utf8");
+    try {
+      await fs.promises.rename(tempPath, filePath);
+    } catch (error) {
+      await fs.promises.unlink(tempPath).catch(() => undefined);
+      throw error;
+    }
+  });
 
 export const getJournalPaths = Effect.gen(function* () {
   const path = yield* Path.Path;
@@ -137,17 +163,15 @@ const recordLastOpened = (filePath: string) =>
     const fs = yield* FileSystem.FileSystem;
     const { stateDir, stateFile } = yield* getJournalPaths;
     yield* fs.makeDirectory(stateDir, { recursive: true });
-    yield* fs.writeFileString(
-      stateFile,
-      JSON.stringify(
-        {
-          lastOpenedPath: filePath,
-          updatedAt: new Date().toISOString(),
-        },
-        null,
-        2
-      )
+    const payload = JSON.stringify(
+      {
+        lastOpenedPath: filePath,
+        updatedAt: new Date().toISOString(),
+      },
+      null,
+      2
     );
+    yield* writeFileAtomic(stateFile, payload);
   });
 
 const readLastOpened = () =>
@@ -181,6 +205,7 @@ const readLastOpened = () =>
 
 const openInEditor = (filePath: string, line?: string | number) =>
   Effect.gen(function* () {
+    yield* requireCommand("nvim");
     yield* recordLastOpened(filePath);
     const args = ["--cmd", "let g:journal_mode=1"];
     if (line !== undefined) {
@@ -201,7 +226,11 @@ export const openEntry = (date: string) =>
 export const openNote = (slug: string) =>
   Effect.gen(function* () {
     const paths = yield* getJournalPaths;
-    const filePath = notePathForSlug(paths, slug);
+    const normalized = normalizeNoteSlug(paths, slug);
+    if (!normalized) {
+      return yield* Effect.fail(new Error("Missing note slug."));
+    }
+    const filePath = notePathForSlug(paths, normalized);
     yield* ensureFileExists(filePath, slug);
     yield* openInEditor(filePath);
   });
@@ -409,6 +438,7 @@ export const getSearchMatches = (query: string, limit?: number) =>
     if (!trimmed) {
       return [];
     }
+    yield* requireCommand("rg");
     const { journalDir } = yield* getJournalPaths;
     const matchLimit = limit && limit > 0 ? Math.floor(limit) : undefined;
     const args = ["--json", "--smart-case"];
@@ -488,6 +518,7 @@ const fzfSelect = (lines: string[], options: {
     if (lines.length === 0) {
       return "";
     }
+    yield* requireCommand("fzf");
 
     const args: string[] = [];
     if (options.ansi) args.push("--ansi");
@@ -538,6 +569,7 @@ export const searchByContent = (query?: string) =>
   Effect.gen(function* () {
     const { journalDir } = yield* getJournalPaths;
     const trimmed = query?.trim() ?? "";
+    yield* requireCommand("rg");
     const result = yield* runCommand("rg", [
       "--line-number",
       "--color=always",
@@ -704,6 +736,17 @@ const isDateSlug = (value: string) => /^\d{4}-\d{2}-\d{2}$/.test(value);
 const stripMarkdownExtension = (value: string) =>
   value.toLowerCase().endsWith(".md") ? value.slice(0, -3) : value;
 
+const isSafeNoteSlug = (value: string) => {
+  if (!value) {
+    return false;
+  }
+  const parts = value.split(/[\\/]+/);
+  if (parts.length === 0) {
+    return false;
+  }
+  return parts.every((part) => part !== "" && part !== "." && part !== "..");
+};
+
 const normalizeNoteSlug = (paths: JournalPaths, value: string) => {
   const trimmed = value.trim();
   if (!trimmed) {
@@ -712,17 +755,19 @@ const normalizeNoteSlug = (paths: JournalPaths, value: string) => {
   const withoutExt = stripMarkdownExtension(trimmed);
   if (paths.path.isAbsolute(withoutExt)) {
     const relative = paths.path.relative(paths.notesDir, withoutExt);
-    if (!relative.startsWith("..")) {
+    if (!relative.startsWith("..") && isSafeNoteSlug(relative)) {
       return relative;
     }
+    return "";
   }
   if (
     withoutExt.startsWith(`notes${paths.path.sep}`) ||
     withoutExt.startsWith("notes/")
   ) {
-    return withoutExt.replace(/^notes[\\/]/, "");
+    const stripped = withoutExt.replace(/^notes[\\/]/, "");
+    return isSafeNoteSlug(stripped) ? stripped : "";
   }
-  return withoutExt;
+  return isSafeNoteSlug(withoutExt) ? withoutExt : "";
 };
 
 const resolveSource = (paths: JournalPaths, source: string) => {
@@ -735,6 +780,9 @@ const resolveSource = (paths: JournalPaths, source: string) => {
   if (paths.path.isAbsolute(withoutExt)) {
     const relativeToNotes = paths.path.relative(paths.notesDir, withoutExt);
     if (!relativeToNotes.startsWith("..")) {
+      if (!isSafeNoteSlug(relativeToNotes)) {
+        return { kind: "unknown" as const, id: "" };
+      }
       return { kind: "note" as const, id: relativeToNotes };
     }
     const relativeToJournal = paths.path.relative(paths.journalDir, withoutExt);
@@ -750,10 +798,17 @@ const resolveSource = (paths: JournalPaths, source: string) => {
     withoutExt.startsWith(`notes${paths.path.sep}`) ||
     withoutExt.startsWith("notes/")
   ) {
-    return { kind: "note" as const, id: withoutExt.replace(/^notes[\\/]/, "") };
+    const stripped = withoutExt.replace(/^notes[\\/]/, "");
+    if (!isSafeNoteSlug(stripped)) {
+      return { kind: "unknown" as const, id: "" };
+    }
+    return { kind: "note" as const, id: stripped };
   }
   if (isDateSlug(withoutExt)) {
     return { kind: "entry" as const, id: withoutExt };
+  }
+  if (!isSafeNoteSlug(withoutExt)) {
+    return { kind: "unknown" as const, id: "" };
   }
   return { kind: "note" as const, id: withoutExt };
 };

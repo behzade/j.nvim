@@ -15,8 +15,8 @@ Common usage:
 - `j` opens today's entry (creates if missing)
 - `j -3` or `j --offset=3` opens the entry from 3 days ago
 - `j --date` / `-d` browse entries with fzf (optionally `--tag=work`)
-- `j --search` / `-s` search by content (rg + fzf)
-- `j --search --json --query <text>` JSON search results for scripts/plugins
+- `j --search <text>` / `-s <text>` search by content (rg + fzf)
+- `j --search <text> --json` JSON search results for scripts/plugins
 - `j --timeline` / `-l` browse a timeline with previews (optionally `--tag=work`)
 - `j --continue` / `-c` open the most recently opened entry or note
 - `j --tag=work` browse entries for that tag

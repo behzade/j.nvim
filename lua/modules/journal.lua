@@ -457,7 +457,7 @@ local function open_search()
                     end
 
                     local result = nil
-                    run_j_json_async({ "--search", "--query", query }, function(out, exit_code, err)
+                    run_j_json_async({ "--search", query }, function(out, exit_code, err)
                         result = { out = out, code = exit_code, err = err }
                         ctx.async:resume()
                     end)
