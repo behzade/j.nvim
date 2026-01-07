@@ -597,16 +597,20 @@ export const tagBrowse = (tag?: string) =>
     if (!selectedTag) {
       const tags = yield* listTags();
       const preview = [
+        `sh -c`,
+        `'tag="$1";`,
         `rg --files-with-matches -g "*.md" -i`,
-        `-e "#{}\\\\b"`,
-        `-e "tags\\\\s*:.*\\\\b{}\\\\b"`,
+        `-e "#$tag\\\\b"`,
+        `-e "tags\\\\s*:.*\\\\b$tag\\\\b"`,
         `${journalDir}`,
         `| head -n 15`,
         `| sed "s#^${journalDir}/##"`,
         `| while read -r file; do`,
-        `  title=$(sed -n "1p" "${journalDir}/$file" | sed "s/^# *//");`,
-        '  printf "%s\\t%s\\n" "${file%.md}" "$title";',
-        `done`,
+        `  preview=$(tail -n +3 "${journalDir}/$file" | rg -m 1 -N ".+" | head -n 1);`,
+        `  if [ -z "$preview" ]; then preview="(empty)"; fi;`,
+        '  printf "%s\\t%s\\n" "${file%.md}" "$preview";',
+        `done'`,
+        `sh {}`,
       ].join(" ");
       selectedTag = yield* fzfSelect(tags, {
         prompt: "Select tag: ",
