@@ -20,7 +20,7 @@ Common usage:
 - `j --timeline` / `-l` browse a timeline with previews (optionally `--tag=work`)
 - `j --continue` / `-c` open the most recently opened entry or note
 - `j --tag=work` browse entries for that tag
-- `j --note=slug` open a note
+- `j --note=slug` / `-n slug` open a note
 - `j --sections <source>` list sections for extraction
 - `j --extract <source> --sections=1,3 --slug <target>` extract sections to a note
 - `--json` output structured JSON and skip fzf/nvim (used by the plugin)

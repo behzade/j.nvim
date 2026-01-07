@@ -17,7 +17,6 @@ import {
   listTags,
   noteBrowse,
   openEntry,
-  extractToNote,
   extractSectionsToNote,
   openMostRecent,
   searchByContent,
@@ -192,6 +191,7 @@ const tagArg = Options.text("tag").pipe(
   Options.withDescription("Browse entries that contain TAG on line 2")
 );
 const noteArg = Options.text("note").pipe(
+  Options.withAlias("n"),
   Options.optional,
   Options.withDescription("Open note (if SLUG omitted, pick from list)")
 );
@@ -245,11 +245,11 @@ const normalizeNoteArgs = (args: string[]) => {
 
   for (let i = 0; i < args.length; i += 1) {
     const arg = args[i];
-    if (arg === "--note=") {
+    if (arg === "--note=" || arg === "-n=") {
       noteRequested = true;
       continue;
     }
-    if (arg === "--note") {
+    if (arg === "--note" || arg === "-n") {
       noteRequested = true;
       const next = args[i + 1];
       if (next && !next.startsWith("-")) {
@@ -258,7 +258,7 @@ const normalizeNoteArgs = (args: string[]) => {
       }
       continue;
     }
-    if (arg.startsWith("--note=")) {
+    if (arg.startsWith("--note=") || arg.startsWith("-n=")) {
       noteRequested = true;
     }
     normalized.push(arg);
