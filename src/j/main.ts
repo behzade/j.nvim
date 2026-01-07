@@ -1,6 +1,7 @@
 import { FileSystem, Path } from "@effect/platform";
-import { CommandDescriptor, Options, HelpDoc } from "@effect/cli";
+import { CommandDescriptor, Options, HelpDoc, Span } from "@effect/cli";
 import type { CliConfig } from "@effect/cli/CliConfig";
+import type { NonEmptyReadonlyArray } from "effect/Array";
 import { Effect } from "effect";
 import {
   dateDaysAgo,
@@ -32,6 +33,104 @@ const formatDate = (date: Date) => {
 
 const outputJson = (value: unknown) =>
   Effect.sync(() => console.log(JSON.stringify(value, null, 2)));
+
+const primitiveHelpText = new Set([
+  "A true or false value.",
+  "A user-defined piece of text.",
+  "A user-defined piece of text that is confidential.",
+  "A floating point number.",
+  "An integer.",
+  "A date without a time-zone in the ISO-8601 format, such as 2007-12-03T10:15:30.",
+  "An existing file or directory.",
+  "An existing file.",
+  "An existing directory.",
+  "A file or directory that must not exist.",
+  "A file that must not exist.",
+  "A directory that must not exist.",
+  "A file or directory.",
+  "A file.",
+  "A directory.",
+]);
+
+const spanToText = (span: Span.Span): string => {
+  switch (span._tag) {
+    case "Text":
+    case "URI":
+      return span.value;
+    case "Highlight":
+    case "Strong":
+    case "Weak":
+      return spanToText(span.value);
+    case "Sequence":
+      return spanToText(span.left) + spanToText(span.right);
+  }
+};
+
+const normalizeHelpText = (text: string) => text.replace(/\s+/g, " ").trim();
+
+const isFillerParagraph = (paragraph: HelpDoc.Paragraph): boolean => {
+  const text = normalizeHelpText(spanToText(paragraph.value));
+  if (text.startsWith("This setting is optional.")) {
+    return true;
+  }
+  if (text.startsWith("This option is optional")) {
+    return true;
+  }
+  return primitiveHelpText.has(text);
+};
+
+const collectParagraphs = (doc: HelpDoc.HelpDoc): Array<HelpDoc.Paragraph> => {
+  switch (doc._tag) {
+    case "Paragraph":
+      return [doc];
+    case "Sequence":
+      return [...collectParagraphs(doc.left), ...collectParagraphs(doc.right)];
+    case "Enumeration":
+      return doc.elements.flatMap(collectParagraphs);
+    case "DescriptionList":
+      return doc.definitions.flatMap(([, child]) => collectParagraphs(child));
+    case "Header":
+    case "Empty":
+      return [];
+  }
+};
+
+const compactBlocks = (docs: Array<HelpDoc.HelpDoc>): HelpDoc.HelpDoc => {
+  const filtered = docs.filter((doc) => !HelpDoc.isEmpty(doc));
+  return filtered.length > 0 ? HelpDoc.blocks(filtered) : HelpDoc.empty;
+};
+
+const compactHelpDoc = (doc: HelpDoc.HelpDoc): HelpDoc.HelpDoc => {
+  switch (doc._tag) {
+    case "Empty":
+    case "Header":
+      return doc;
+    case "Paragraph":
+      return isFillerParagraph(doc) ? HelpDoc.empty : doc;
+    case "Sequence":
+      return compactBlocks([compactHelpDoc(doc.left), compactHelpDoc(doc.right)]);
+    case "DescriptionList": {
+      const definitions = doc.definitions.map(([span, child]) => {
+        const paragraphs = collectParagraphs(child);
+        const hasNonFiller = paragraphs.some((paragraph) => !isFillerParagraph(paragraph));
+        const cleaned = hasNonFiller ? compactHelpDoc(child) : child;
+        return [span, cleaned] as const;
+      });
+      return HelpDoc.descriptionList(
+        definitions as NonEmptyReadonlyArray<readonly [Span.Span, HelpDoc.HelpDoc]>
+      );
+    }
+    case "Enumeration": {
+      const elements = doc.elements
+        .map(compactHelpDoc)
+        .filter((element) => !HelpDoc.isEmpty(element));
+      if (elements.length === 0) {
+        return HelpDoc.empty;
+      }
+      return HelpDoc.enumeration(elements as NonEmptyReadonlyArray<HelpDoc.HelpDoc>);
+    }
+  }
+};
 
 const parseSectionListArg = (value: string) =>
   value
@@ -129,7 +228,7 @@ const parseArgs = (args: string[]): Effect.Effect<ParsedOptions | null> =>
 
     if (parseResult._tag === "BuiltIn") {
       if (parseResult.option._tag === "ShowHelp") {
-        const helpDoc = CommandDescriptor.getHelp(command, cliConfig);
+        const helpDoc = compactHelpDoc(CommandDescriptor.getHelp(command, cliConfig));
         const helpText = HelpDoc.toAnsiText(helpDoc);
         yield* Effect.sync(() => console.log(helpText));
         return null;
