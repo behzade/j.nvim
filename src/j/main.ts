@@ -1,8 +1,10 @@
 import { FileSystem, Path } from "@effect/platform";
 import { CommandDescriptor, Options, HelpDoc, Span } from "@effect/cli";
 import type { CliConfig } from "@effect/cli/CliConfig";
-import type { NonEmptyReadonlyArray } from "effect/Array";
+import type * as ValidationError from "@effect/cli/ValidationError";
+import type * as Terminal from "@effect/platform/Terminal";
 import { Effect } from "effect";
+import * as Option from "effect/Option";
 import {
   dateDaysAgo,
   getJournalPaths,
@@ -110,15 +112,17 @@ const compactHelpDoc = (doc: HelpDoc.HelpDoc): HelpDoc.HelpDoc => {
     case "Sequence":
       return compactBlocks([compactHelpDoc(doc.left), compactHelpDoc(doc.right)]);
     case "DescriptionList": {
-      const definitions = doc.definitions.map(([span, child]) => {
+      const mapped = doc.definitions.map(([span, child]) => {
         const paragraphs = collectParagraphs(child);
         const hasNonFiller = paragraphs.some((paragraph) => !isFillerParagraph(paragraph));
         const cleaned = hasNonFiller ? compactHelpDoc(child) : child;
-        return [span, cleaned] as const;
+        return [span, cleaned] as [Span.Span, HelpDoc.HelpDoc];
       });
-      return HelpDoc.descriptionList(
-        definitions as NonEmptyReadonlyArray<readonly [Span.Span, HelpDoc.HelpDoc]>
-      );
+      const [first, ...rest] = mapped;
+      if (!first) {
+        return HelpDoc.empty;
+      }
+      return HelpDoc.descriptionList([first, ...rest]);
     }
     case "Enumeration": {
       const elements = doc.elements
@@ -127,7 +131,11 @@ const compactHelpDoc = (doc: HelpDoc.HelpDoc): HelpDoc.HelpDoc => {
       if (elements.length === 0) {
         return HelpDoc.empty;
       }
-      return HelpDoc.enumeration(elements as NonEmptyReadonlyArray<HelpDoc.HelpDoc>);
+      const [first, ...rest] = elements;
+      if (!first) {
+        return HelpDoc.empty;
+      }
+      return HelpDoc.enumeration([first, ...rest]);
     }
   }
 };
@@ -195,14 +203,31 @@ type ParsedOptions = {
   slug: string | undefined;
 };
 
+type ParsedOptionValues = {
+  json: Option.Option<boolean>;
+  date: Option.Option<boolean>;
+  search: Option.Option<boolean>;
+  timeline: Option.Option<boolean>;
+  continue: Option.Option<boolean>;
+  tag: Option.Option<string>;
+  note: Option.Option<string>;
+  extract: Option.Option<string>;
+  sections: Option.Option<string>;
+  slug: Option.Option<string>;
+};
+
 const isTagRequested = (args: string[]) =>
   args.some((arg) => arg === "-t" || arg === "--tag" || arg.startsWith("--tag="));
 
 const parseArgs = (
   args: string[]
-): Effect.Effect<(ParsedOptions & { tagRequested: boolean }) | null> =>
+): Effect.Effect<
+  (ParsedOptions & { tagRequested: boolean }) | null,
+  ValidationError.ValidationError,
+  FileSystem.FileSystem | Path.Path | Terminal.Terminal
+> =>
   Effect.gen(function* () {
-    const optionsDef = Options.all({
+    const optionsDef: Options.Options<ParsedOptionValues> = Options.all({
       json: jsonArg,
       date: dateArg,
       search: searchArg,
@@ -226,11 +251,7 @@ const parseArgs = (
       showTypes: false,
     };
 
-    const parseResult = yield* CommandDescriptor.parse(["j", ...args], cliConfig)(command).pipe(
-      Effect.catchAll((error) => {
-        return Effect.fail(error);
-      })
-    );
+    const parseResult = yield* CommandDescriptor.parse(["j", ...args], cliConfig)(command);
 
     if (parseResult._tag === "BuiltIn") {
       if (parseResult.option._tag === "ShowHelp") {
@@ -244,12 +265,8 @@ const parseArgs = (
 
     const { options: parsed } = parseResult.value;
 
-    const getOpt = <A>(opt: any): A | undefined => {
-      if (opt && opt._tag === "Some") {
-        return opt.value;
-      }
-      return undefined;
-    };
+    const getOpt = <A>(opt: Option.Option<A>): A | undefined =>
+      Option.isSome(opt) ? opt.value : undefined;
 
     return {
       json: getOpt(parsed.json),

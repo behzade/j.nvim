@@ -1,4 +1,5 @@
 import { Command } from "@effect/platform";
+import type * as CommandExecutor from "@effect/platform/CommandExecutor";
 import * as Chunk from "effect/Chunk";
 import { Effect } from "effect";
 import * as Stream from "effect/Stream";
@@ -15,7 +16,7 @@ export type CommandInput = {
   env?: Record<string, string | undefined>;
 };
 
-const collectOutput = (stream: Stream.Stream<Uint8Array, unknown, unknown>) =>
+const collectOutput = <E, R>(stream: Stream.Stream<Uint8Array, E, R>) =>
   Effect.map(Stream.runCollect(Stream.decodeText(stream)), (chunks) =>
     Chunk.join(chunks, "")
   );
@@ -40,7 +41,9 @@ const buildCommand = (
   return command;
 };
 
-export const commandExists = (name: string) =>
+export const commandExists = (
+  name: string
+): Effect.Effect<boolean, never, CommandExecutor.CommandExecutor> =>
   Command.exitCode(Command.make("which", name)).pipe(
     Effect.map((exitCode) => Number(exitCode) === 0),
     Effect.catchAll(() => Effect.succeed(false))
@@ -50,7 +53,7 @@ export const runCommand = (
   cmd: string,
   args: string[] = [],
   input: CommandInput = {}
-) =>
+): Effect.Effect<CommandResult, unknown, CommandExecutor.CommandExecutor> =>
   Effect.scoped(
     Effect.gen(function* () {
       const command = buildCommand(cmd, args, input);
@@ -76,7 +79,7 @@ export const runCommandInteractive = (
   cmd: string,
   args: string[] = [],
   input: Omit<CommandInput, "stdin"> = {}
-) =>
+): Effect.Effect<number, unknown, CommandExecutor.CommandExecutor> =>
   Effect.gen(function* () {
     let command = Command.make(cmd, ...args);
 
