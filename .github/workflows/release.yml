@@ -1,0 +1,46 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            os: linux
+            arch: x64
+            ext: ""
+          - runner: macos-latest
+            os: macos
+            arch: arm64
+            ext: ""
+          - runner: windows-latest
+            os: windows
+            arch: x64
+            ext: ".exe"
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v1
+        with:
+          bun-version: "latest"
+      - run: bun install
+      - run: bun run build
+      - name: Rename artifact
+        shell: bash
+        run: |
+          src="dist/j"
+          if [ -f "dist/j.exe" ]; then
+            src="dist/j.exe"
+          fi
+          mv "$src" "dist/j-${{ matrix.os }}-${{ matrix.arch }}${{ matrix.ext }}"
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/j-*

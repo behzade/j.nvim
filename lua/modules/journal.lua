@@ -21,69 +21,58 @@ local function confirm_with_zen(picker)
     end)
 end
 
-local function run_j_async(args, on_success)
-    local cmd = vim.fn.exepath("j")
-    if cmd == "" then
-        notify("j CLI not found in PATH.", vim.log.levels.ERROR)
-        return
-    end
+local uv = vim.uv or vim.loop
 
-    local cmd_list = { cmd }
-    for _, arg in ipairs(args) do
-        table.insert(cmd_list, arg)
+local function os_name()
+    local sysname = uv.os_uname().sysname
+    if sysname == "Windows_NT" then
+        return "windows"
+    elseif sysname == "Darwin" then
+        return "macos"
+    elseif sysname == "Linux" then
+        return "linux"
     end
-
-    local stderr = {}
-    local job_id = vim.fn.jobstart(cmd_list, {
-        stdout_buffered = true,
-        stderr_buffered = true,
-        on_stderr = function(_, data, _)
-            if not data then
-                return
-            end
-            for _, line in ipairs(data) do
-                if line ~= "" then
-                    table.insert(stderr, line)
-                end
-            end
-        end,
-        on_exit = function(_, code, _)
-            if code ~= 0 then
-                local message = #stderr > 0 and table.concat(stderr, "\n") or "j command failed."
-                notify(message, vim.log.levels.ERROR)
-                return
-            end
-            if on_success then
-                vim.schedule(on_success)
-            end
-        end,
-    })
-
-    if job_id <= 0 then
-        notify("Failed to start j command.", vim.log.levels.ERROR)
-    end
+    return nil
 end
 
-local function run_j_json_async(args, on_complete)
+local function arch_name()
+    local machine = uv.os_uname().machine
+    if machine == "x86_64" or machine == "amd64" or machine == "AMD64" then
+        return "x64"
+    elseif machine == "arm64" or machine == "aarch64" then
+        return "arm64"
+    end
+    return nil
+end
+
+local function is_windows()
+    return os_name() == "windows"
+end
+
+local function plugin_bin_dir()
+    return vim.fn.stdpath("data") .. "/j.nvim/bin"
+end
+
+local function plugin_bin_path()
+    return plugin_bin_dir() .. "/j" .. (is_windows() and ".exe" or "")
+end
+
+local function resolve_j()
     local cmd = vim.fn.exepath("j")
-    local function safe_complete(output, code, stderr)
-        vim.schedule(function()
-            on_complete(output, code, stderr)
-        end)
+    if cmd ~= "" then
+        return cmd
     end
-
-    if cmd == "" then
-        safe_complete("", 127, "j CLI not found in PATH.")
-        return
+    local local_path = plugin_bin_path()
+    if uv.fs_stat(local_path) then
+        return local_path
     end
+    return nil
+end
 
-    local cmd_list = { cmd }
-    vim.list_extend(cmd_list, args)
-    table.insert(cmd_list, "--json")
-
+local function run_cmd_async(cmd_list, on_complete)
     if vim.system then
         vim.system(cmd_list, { text = true }, function(result)
-            safe_complete(result.stdout or "", result.code or 0, result.stderr or "")
+            on_complete(result.stdout or "", result.code or 0, result.stderr or "")
         end)
         return
     end
@@ -111,13 +100,148 @@ local function run_j_json_async(args, on_complete)
             collect(data, stderr)
         end,
         on_exit = function(_, code, _)
-            safe_complete(table.concat(stdout, "\n"), code, table.concat(stderr, "\n"))
+            on_complete(table.concat(stdout, "\n"), code, table.concat(stderr, "\n"))
         end,
     })
 
     if job_id <= 0 then
-        safe_complete("", 1, "Failed to start j command.")
+        on_complete("", 1, "Failed to start command.")
     end
+end
+
+local function download_j_async(on_complete)
+    local os = os_name()
+    local arch = arch_name()
+    if not os or not arch then
+        on_complete(false, "Unsupported platform for j.nvim binary.")
+        return
+    end
+
+    local ext = os == "windows" and ".exe" or ""
+    local asset = string.format("j-%s-%s%s", os, arch, ext)
+    local url = "https://github.com/behzade/j.nvim/releases/latest/download/" .. asset
+    local target = plugin_bin_path()
+
+    if vim.fn.executable("curl") ~= 1 and not (os == "windows" and vim.fn.executable("powershell") == 1) then
+        on_complete(false, "Missing downloader (curl or powershell).")
+        return
+    end
+
+    vim.fn.mkdir(plugin_bin_dir(), "p")
+
+    local cmd_list = nil
+    if vim.fn.executable("curl") == 1 then
+        cmd_list = { "curl", "-fL", url, "-o", target }
+    else
+        local ps = string.format("Invoke-WebRequest -Uri '%s' -OutFile '%s'", url, target)
+        cmd_list = { "powershell", "-NoProfile", "-Command", ps }
+    end
+
+    run_cmd_async(cmd_list, function(_, code, stderr)
+        if code ~= 0 then
+            local message = stderr ~= "" and stderr or "Failed to download j binary."
+            on_complete(false, message)
+            return
+        end
+
+        if not is_windows() then
+            pcall(vim.fn.setfperm, target, "rwxr-xr-x")
+        end
+        on_complete(true, "")
+    end)
+end
+
+local download_state = { in_progress = false, waiters = {} }
+
+local function ensure_j_async(on_ready)
+    local cmd = resolve_j()
+    if cmd then
+        on_ready(cmd, "")
+        return
+    end
+
+    table.insert(download_state.waiters, on_ready)
+    if download_state.in_progress then
+        return
+    end
+    download_state.in_progress = true
+
+    download_j_async(function(ok, err)
+        download_state.in_progress = false
+        local resolved = ok and resolve_j() or nil
+        local waiters = download_state.waiters
+        download_state.waiters = {}
+        for _, cb in ipairs(waiters) do
+            cb(resolved, err)
+        end
+    end)
+end
+
+local function run_j_async(args, on_success)
+    ensure_j_async(function(cmd, err)
+        if not cmd then
+            notify(err ~= "" and err or "j CLI not found in PATH.", vim.log.levels.ERROR)
+            return
+        end
+
+        local cmd_list = { cmd }
+        for _, arg in ipairs(args) do
+            table.insert(cmd_list, arg)
+        end
+
+        local stderr = {}
+        local job_id = vim.fn.jobstart(cmd_list, {
+            stdout_buffered = true,
+            stderr_buffered = true,
+            on_stderr = function(_, data, _)
+                if not data then
+                    return
+                end
+                for _, line in ipairs(data) do
+                    if line ~= "" then
+                        table.insert(stderr, line)
+                    end
+                end
+            end,
+            on_exit = function(_, code, _)
+                if code ~= 0 then
+                    local message = #stderr > 0 and table.concat(stderr, "\n") or "j command failed."
+                    notify(message, vim.log.levels.ERROR)
+                    return
+                end
+                if on_success then
+                    vim.schedule(on_success)
+                end
+            end,
+        })
+
+        if job_id <= 0 then
+            notify("Failed to start j command.", vim.log.levels.ERROR)
+        end
+    end)
+end
+
+local function run_j_json_async(args, on_complete)
+    local function safe_complete(output, code, stderr)
+        vim.schedule(function()
+            on_complete(output, code, stderr)
+        end)
+    end
+
+    ensure_j_async(function(cmd, err)
+        if not cmd then
+            safe_complete("", 127, err ~= "" and err or "j CLI not found in PATH.")
+            return
+        end
+
+        local cmd_list = { cmd }
+        vim.list_extend(cmd_list, args)
+        table.insert(cmd_list, "--json")
+
+        run_cmd_async(cmd_list, function(stdout, code, stderr)
+            safe_complete(stdout, code, stderr)
+        end)
+    end)
 end
 
 local function run_j_json(args, on_success)
