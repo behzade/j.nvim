@@ -237,7 +237,35 @@ type ParsedOptionValues = {
 };
 
 const isTagRequested = (args: string[]) =>
-  args.some((arg) => arg === "-t" || arg === "--tag" || arg.startsWith("--tag="));
+  args.some(
+    (arg) =>
+      arg === "-t" ||
+      arg === "--tag" ||
+      arg.startsWith("--tag=") ||
+      arg.startsWith("-t=")
+  );
+
+const normalizeTagArgs = (args: string[]) => {
+  const normalized: string[] = [];
+
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i];
+    if (arg === "--tag=" || arg === "-t=") {
+      continue;
+    }
+    if (arg === "--tag" || arg === "-t") {
+      const next = args[i + 1];
+      if (next && !next.startsWith("-")) {
+        normalized.push(arg, next);
+        i += 1;
+      }
+      continue;
+    }
+    normalized.push(arg);
+  }
+
+  return normalized;
+};
 
 const normalizeNoteArgs = (args: string[]) => {
   const normalized: string[] = [];
@@ -378,7 +406,8 @@ export const main = Effect.gen(function* () {
   }
 
   const tagRequested = isTagRequested(filteredArgs);
-  const { normalized, noteRequested } = normalizeNoteArgs(filteredArgs);
+  const tagNormalized = normalizeTagArgs(filteredArgs);
+  const { normalized, noteRequested } = normalizeNoteArgs(tagNormalized);
   const parsed = yield* parseArgs(normalized, { tagRequested, noteRequested });
   if (!parsed) {
     return;
