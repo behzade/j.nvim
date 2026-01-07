@@ -52,6 +52,9 @@ Data locations:
     "folke/snacks.nvim",
     "folke/zen-mode.nvim",
   },
+  build = function()
+    require("journal").install()
+  end,
   config = function()
     require("journal").setup()
   end,
@@ -64,3 +67,4 @@ Keymaps:
 - `<leader>jx` extract sections to a note
 
 The plugin expects the `j` CLI to be available on PATH and uses `snacks.nvim` pickers.
+If `j` is not on PATH, run `:JournalInstall` (or use lazy.nvim `build`) to download a release binary to `stdpath("data")/j.nvim/bin`.

@@ -2,8 +2,14 @@ local M = {}
 
 local ok_snacks, Snacks = pcall(require, "snacks")
 
-local function notify(message, level)
-    vim.notify(message, level or vim.log.levels.INFO, { title = "Journal" })
+local function notify(message, level, opts)
+    local options = { title = "Journal" }
+    if opts then
+        for key, value in pairs(opts) do
+            options[key] = value
+        end
+    end
+    return vim.notify(message, level or vim.log.levels.INFO, options)
 end
 
 local function ensure_snacks()
@@ -109,12 +115,20 @@ local function run_cmd_async(cmd_list, on_complete)
     end
 end
 
-local function download_j_async(on_complete)
+local function update_progress(message, notify_id)
+    if notify_id then
+        notify(message, vim.log.levels.INFO, { replace = notify_id })
+        return
+    end
+    vim.api.nvim_echo({ { message, "None" } }, false, {})
+end
+
+local function download_j_sync()
     local os = os_name()
     local arch = arch_name()
     if not os or not arch then
-        on_complete(false, "Unsupported platform for j.nvim binary.")
-        return
+        notify("Unsupported platform for j.nvim binary.", vim.log.levels.ERROR)
+        return false
     end
 
     local ext = os == "windows" and ".exe" or ""
@@ -123,102 +137,120 @@ local function download_j_async(on_complete)
     local target = plugin_bin_path()
 
     if vim.fn.executable("curl") ~= 1 and not (os == "windows" and vim.fn.executable("powershell") == 1) then
-        on_complete(false, "Missing downloader (curl or powershell).")
-        return
+        notify("Missing downloader (curl or powershell).", vim.log.levels.ERROR)
+        return false
     end
 
     vim.fn.mkdir(plugin_bin_dir(), "p")
 
+    local notify_id = notify("Downloading j CLI...", vim.log.levels.INFO)
+    local stderr_lines = {}
     local cmd_list = nil
+    local track_progress = false
     if vim.fn.executable("curl") == 1 then
-        cmd_list = { "curl", "-fL", url, "-o", target }
+        cmd_list = { "curl", "-fL", "--progress-bar", url, "-o", target }
+        track_progress = true
     else
         local ps = string.format("Invoke-WebRequest -Uri '%s' -OutFile '%s'", url, target)
         cmd_list = { "powershell", "-NoProfile", "-Command", ps }
     end
 
-    run_cmd_async(cmd_list, function(_, code, stderr)
-        if code ~= 0 then
-            local message = stderr ~= "" and stderr or "Failed to download j binary."
-            on_complete(false, message)
-            return
-        end
+    local job_id = vim.fn.jobstart(cmd_list, {
+        stderr_buffered = false,
+        on_stderr = function(_, data, _)
+            if not data then
+                return
+            end
+            for _, line in ipairs(data) do
+                if line ~= "" then
+                    local cleaned = line:gsub("\r", "")
+                    if track_progress then
+                        update_progress("Downloading j CLI... " .. cleaned, notify_id)
+                    else
+                        table.insert(stderr_lines, cleaned)
+                    end
+                end
+            end
+        end,
+    })
 
-        if not is_windows() then
-            pcall(vim.fn.setfperm, target, "rwxr-xr-x")
-        end
-        on_complete(true, "")
-    end)
+    if job_id <= 0 then
+        notify("Failed to start download.", vim.log.levels.ERROR, { replace = notify_id })
+        return false
+    end
+
+    local result = vim.fn.jobwait({ job_id }, -1)
+    local code = result[1] or 1
+    if not notify_id then
+        vim.api.nvim_echo({ { "" } }, false, {})
+    end
+    if code ~= 0 then
+        pcall(vim.fn.delete, target)
+        local message = #stderr_lines > 0 and table.concat(stderr_lines, "\n") or "Failed to download j CLI."
+        notify(message, vim.log.levels.ERROR, { replace = notify_id })
+        return false
+    end
+
+    if not is_windows() then
+        pcall(vim.fn.setfperm, target, "rwxr-xr-x")
+    end
+    notify("Downloaded j CLI.", vim.log.levels.INFO, { replace = notify_id })
+    return true
 end
 
-local download_state = { in_progress = false, waiters = {} }
-
-local function ensure_j_async(on_ready)
+local function ensure_j_sync()
     local cmd = resolve_j()
     if cmd then
-        on_ready(cmd, "")
-        return
+        return cmd
     end
-
-    table.insert(download_state.waiters, on_ready)
-    if download_state.in_progress then
-        return
+    local ok = download_j_sync()
+    if not ok then
+        return nil
     end
-    download_state.in_progress = true
-
-    download_j_async(function(ok, err)
-        download_state.in_progress = false
-        local resolved = ok and resolve_j() or nil
-        local waiters = download_state.waiters
-        download_state.waiters = {}
-        for _, cb in ipairs(waiters) do
-            cb(resolved, err)
-        end
-    end)
+    return resolve_j()
 end
 
 local function run_j_async(args, on_success)
-    ensure_j_async(function(cmd, err)
-        if not cmd then
-            notify(err ~= "" and err or "j CLI not found in PATH.", vim.log.levels.ERROR)
-            return
-        end
+    local cmd = resolve_j()
+    if not cmd then
+        notify("j CLI not found in PATH. Run :JournalInstall to download.", vim.log.levels.ERROR)
+        return
+    end
 
-        local cmd_list = { cmd }
-        for _, arg in ipairs(args) do
-            table.insert(cmd_list, arg)
-        end
+    local cmd_list = { cmd }
+    for _, arg in ipairs(args) do
+        table.insert(cmd_list, arg)
+    end
 
-        local stderr = {}
-        local job_id = vim.fn.jobstart(cmd_list, {
-            stdout_buffered = true,
-            stderr_buffered = true,
-            on_stderr = function(_, data, _)
-                if not data then
-                    return
+    local stderr = {}
+    local job_id = vim.fn.jobstart(cmd_list, {
+        stdout_buffered = true,
+        stderr_buffered = true,
+        on_stderr = function(_, data, _)
+            if not data then
+                return
+            end
+            for _, line in ipairs(data) do
+                if line ~= "" then
+                    table.insert(stderr, line)
                 end
-                for _, line in ipairs(data) do
-                    if line ~= "" then
-                        table.insert(stderr, line)
-                    end
-                end
-            end,
-            on_exit = function(_, code, _)
-                if code ~= 0 then
-                    local message = #stderr > 0 and table.concat(stderr, "\n") or "j command failed."
-                    notify(message, vim.log.levels.ERROR)
-                    return
-                end
-                if on_success then
-                    vim.schedule(on_success)
-                end
-            end,
-        })
+            end
+        end,
+        on_exit = function(_, code, _)
+            if code ~= 0 then
+                local message = #stderr > 0 and table.concat(stderr, "\n") or "j command failed."
+                notify(message, vim.log.levels.ERROR)
+                return
+            end
+            if on_success then
+                vim.schedule(on_success)
+            end
+        end,
+    })
 
-        if job_id <= 0 then
-            notify("Failed to start j command.", vim.log.levels.ERROR)
-        end
-    end)
+    if job_id <= 0 then
+        notify("Failed to start j command.", vim.log.levels.ERROR)
+    end
 end
 
 local function run_j_json_async(args, on_complete)
@@ -228,19 +260,18 @@ local function run_j_json_async(args, on_complete)
         end)
     end
 
-    ensure_j_async(function(cmd, err)
-        if not cmd then
-            safe_complete("", 127, err ~= "" and err or "j CLI not found in PATH.")
-            return
-        end
+    local cmd = resolve_j()
+    if not cmd then
+        safe_complete("", 127, "j CLI not found in PATH. Run :JournalInstall to download.")
+        return
+    end
 
-        local cmd_list = { cmd }
-        vim.list_extend(cmd_list, args)
-        table.insert(cmd_list, "--json")
+    local cmd_list = { cmd }
+    vim.list_extend(cmd_list, args)
+    table.insert(cmd_list, "--json")
 
-        run_cmd_async(cmd_list, function(stdout, code, stderr)
-            safe_complete(stdout, code, stderr)
-        end)
+    run_cmd_async(cmd_list, function(stdout, code, stderr)
+        safe_complete(stdout, code, stderr)
     end)
 end
 
@@ -632,9 +663,23 @@ local function open_search()
 end
 
 function M.setup()
+    if vim.api.nvim_create_user_command then
+        vim.api.nvim_create_user_command("JournalInstall", function()
+            M.install()
+        end, {})
+    end
     vim.keymap.set({ "n", "v" }, "<leader>jx", extract_section, { desc = "Journal: Extract section", silent = true })
     vim.keymap.set("n", "<leader>jl", open_search, { desc = "Journal: Search", silent = true })
     vim.keymap.set("n", "<leader>jt", open_tags, { desc = "Journal: Tags", silent = true })
+end
+
+function M.install()
+    local cmd = ensure_j_sync()
+    if not cmd then
+        notify("Failed to install j CLI.", vim.log.levels.ERROR)
+        return false
+    end
+    return true
 end
 
 return M
