@@ -1,10 +1,9 @@
 import { FileSystem, Path } from "@effect/platform";
 import { Effect } from "effect";
-import {
-  runCommand,
-  runCommandInherit,
-  runCommandInteractive,
-} from "../shared/command";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
+import { runCommand, runCommandInteractive } from "../shared/command";
 
 type PathOps = {
   join: (...segments: string[]) => string;
@@ -188,7 +187,7 @@ const openInEditor = (filePath: string, line?: string | number) =>
       args.push(`+${line}`);
     }
     args.push("+ZenMode", filePath);
-    yield* runCommandInherit("nvim", args);
+    yield* runCommandInteractive("nvim", args);
   });
 
 export const openEntry = (date: string) =>
@@ -251,7 +250,9 @@ const walkMarkdownFiles = (rootDir: string, excludeDir: string[]) =>
 
     const walk = (dir: string): Effect.Effect<void> =>
       Effect.gen(function* () {
-        const entries = yield* fs.readDirectory(dir);
+        const entries = yield* fs.readDirectory(dir).pipe(
+          Effect.catchAll(() => Effect.succeed([] as Array<string | { name: string }>))
+        );
         for (const entry of entries) {
           const name =
             typeof entry === "string"
@@ -261,7 +262,9 @@ const walkMarkdownFiles = (rootDir: string, excludeDir: string[]) =>
             continue;
           }
           const fullPath = path.join(dir, name);
-          const info = yield* fs.stat(fullPath);
+          const info = yield* fs.stat(fullPath).pipe(
+            Effect.catchAll(() => Effect.succeed({ type: "unknown" as const }))
+          );
           if (isDirectoryInfo(info)) {
             if (excludeDir.includes(name)) {
               continue;
@@ -439,6 +442,26 @@ export const getSearchMatches = () =>
     return matches;
   });
 
+const escapeShell = (s: string) => `'${s.replace(/'/g, "'\\''")}'`;
+
+const withTempFile = <A, E, R>(
+  content: string,
+  fn: (filePath: string) => Effect.Effect<A, E, R>
+) =>
+  Effect.gen(function* () {
+    const dir = os.tmpdir();
+    const filePath = path.join(
+      dir,
+      `j-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`
+    );
+    yield* Effect.promise(() => fs.promises.writeFile(filePath, content, "utf8"));
+    try {
+      return yield* fn(filePath);
+    } finally {
+      yield* Effect.promise(() => fs.promises.unlink(filePath).catch(() => undefined));
+    }
+  });
+
 const fzfSelect = (lines: string[], options: {
   prompt?: string;
   preview?: string;
@@ -463,14 +486,21 @@ const fzfSelect = (lines: string[], options: {
       args.push("--preview-window", options.previewWindow);
     if (options.prompt) args.push("--prompt", options.prompt);
 
-    const result = yield* runCommandInteractive("fzf", args, {
-      stdin: `${lines.join("\n")}\n`,
-    });
-    if (result.exitCode !== 0) {
-      return "";
-    }
+    const inputContent = `${lines.join("\n")}\n`;
+    const selection = yield* withTempFile(inputContent, (inputPath) =>
+      withTempFile("", (outputPath) =>
+        Effect.gen(function* () {
+          const escapedArgs = args.map(escapeShell).join(" ");
+          const shellCmd = `${escapeShell("fzf")} ${escapedArgs} < ${escapeShell(inputPath)} > ${escapeShell(outputPath)}`;
+          yield* runCommandInteractive("sh", ["-c", shellCmd]);
+          return yield* Effect.promise(() =>
+            fs.promises.readFile(outputPath, "utf8").catch(() => "")
+          );
+        })
+      )
+    );
 
-    return result.stdout.trim();
+    return selection.trim();
   });
 
 export const searchByDate = (tag?: string) =>
@@ -750,7 +780,7 @@ const collectSections = (content: string): Section[] => {
           endLine -= 1;
         }
         if (endLine >= startLine) {
-          sections.push({ startLine, endLine, title: "", preview: "" });
+          sections.push({ startLine, endLine, blockEndLine: endLine, title: "", preview: "" });
         }
         startLine = null;
       }
@@ -768,7 +798,7 @@ const collectSections = (content: string): Section[] => {
       endLine -= 1;
     }
     if (endLine >= startLine) {
-      sections.push({ startLine, endLine, title: "", preview: "" });
+      sections.push({ startLine, endLine, blockEndLine: endLine, title: "", preview: "" });
     }
   }
 

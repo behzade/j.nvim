@@ -2,9 +2,9 @@ import { Command } from "@effect/platform";
 import * as Chunk from "effect/Chunk";
 import { Effect } from "effect";
 import * as Stream from "effect/Stream";
-import { promises as nodeFs } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 
 export type CommandResult = {
   stdout: string;
@@ -43,16 +43,7 @@ const buildCommand = (
   return command;
 };
 
-const shellEscape = (value: string) => `'${value.replace(/'/g, "'\\''")}'`;
-
-const makeTempPath = (prefix: string) =>
-  join(
-    tmpdir(),
-    `${prefix}-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`
-  );
-
-const safeUnlink = (path: string) =>
-  nodeFs.unlink(path).catch(() => undefined);
+const escapeShell = (s: string) => `'${s.replace(/'/g, "'\\''")}'`;
 
 export const commandExists = (name: string) =>
   Command.exitCode(Command.make("which", name)).pipe(
@@ -89,41 +80,6 @@ export const runCommand = (
 export const runCommandInteractive = (
   cmd: string,
   args: string[] = [],
-  input: CommandInput = {}
-) =>
-  Effect.gen(function* () {
-    const stdin = input.stdin ?? "";
-    const inputPath = makeTempPath("j-fzf-input");
-    const outputPath = makeTempPath("j-fzf-output");
-
-    yield* Effect.promise(() => nodeFs.writeFile(inputPath, stdin, "utf8"));
-
-    const commandLine = [cmd, ...args].map(shellEscape).join(" ");
-    const fullCommand = `${commandLine} < ${shellEscape(inputPath)} > ${shellEscape(
-      outputPath
-    )}`;
-    const exitCode = yield* runCommandInherit("sh", ["-c", fullCommand], {
-      cwd: input.cwd,
-      env: input.env,
-    });
-
-    const stdout = yield* Effect.promise(() =>
-      nodeFs.readFile(outputPath, "utf8").catch(() => "")
-    );
-    yield* Effect.promise(() =>
-      Promise.allSettled([safeUnlink(inputPath), safeUnlink(outputPath)])
-    );
-
-    return {
-      stdout,
-      stderr: "",
-      exitCode,
-    } satisfies CommandResult;
-  });
-
-export const runCommandInherit = (
-  cmd: string,
-  args: string[] = [],
   input: Omit<CommandInput, "stdin"> = {}
 ) =>
   Effect.gen(function* () {
@@ -141,4 +97,27 @@ export const runCommandInherit = (
     const exitCode = yield* Command.exitCode(command);
 
     return Number(exitCode);
+  });
+
+export const runCommandWithInputFile = (
+  cmd: string,
+  args: string[],
+  inputContent: string
+) =>
+  Effect.gen(function* () {
+    const tmpDir = os.tmpdir();
+    const inputPath = path.join(
+      tmpDir,
+      `j-input-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`
+    );
+    yield* Effect.promise(() => fs.promises.writeFile(inputPath, inputContent, "utf8"));
+
+    const escapedArgs = args.map(escapeShell).join(" ");
+    const shellCmd = `${escapeShell(cmd)} ${escapedArgs} < ${escapeShell(inputPath)}`;
+
+    try {
+      yield* runCommandInteractive("sh", ["-c", shellCmd]);
+    } finally {
+      yield* Effect.promise(() => fs.promises.unlink(inputPath).catch(() => undefined));
+    }
   });

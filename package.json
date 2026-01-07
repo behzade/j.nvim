@@ -3,27 +3,20 @@
   "version": "0.0.0",
   "type": "module",
   "bin": {
-    "j": "dist/index.node.js"
+    "j": "dist/j"
   },
   "scripts": {
-    "dev:bun": "bun run src/j/index.bun.ts",
-    "dev:node": "node --import tsx src/j/index.node.ts",
-    "build:bun": "bun build src/j/index.bun.ts --compile --outfile dist/j-bun",
-    "build:node": "esbuild src/j/index.node.ts --bundle --platform=node --outfile=dist/j --loader:.node=file",
-    "install:local": "npm run build:node && mkdir -p ~/.local/bin && install -m 755 dist/j ~/.local/bin/j",
-    "install:local:bun": "bun run build:bun && mkdir -p ~/.local/bin && install -m 755 dist/j-bun ~/.local/bin/j-bun"
+    "dev": "bun run src/j/index.bun.ts",
+    "build": "bun build src/j/index.bun.ts --compile --outfile dist/j",
+    "install:local": "bun run build && mkdir -p ~/.local/bin && install -m 755 dist/j ~/.local/bin/j"
   },
   "dependencies": {
     "@effect/platform": "^0.94.1",
     "@effect/platform-bun": "^0.87.0",
-    "@effect/platform-node": "^0.104.0",
     "effect": "^3.10.7"
   },
   "devDependencies": {
-    "@types/node": "^22.10.0",
-    "esbuild": "^0.27.2",
-    "tsup": "^8.3.5",
-    "tsx": "^4.19.4",
+    "bun-types": "^1.0.0",
     "typescript": "^5.9.3"
   }
 }
