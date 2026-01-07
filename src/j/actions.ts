@@ -1,6 +1,10 @@
 import { FileSystem, Path } from "@effect/platform";
 import { Effect } from "effect";
-import { runCommand, runCommandInherit } from "../shared/command";
+import {
+  runCommand,
+  runCommandInherit,
+  runCommandInteractive,
+} from "../shared/command";
 
 type PathOps = {
   join: (...segments: string[]) => string;
@@ -459,7 +463,9 @@ const fzfSelect = (lines: string[], options: {
       args.push("--preview-window", options.previewWindow);
     if (options.prompt) args.push("--prompt", options.prompt);
 
-    const result = yield* runCommand("fzf", args, { stdin: `${lines.join("\n")}\n` });
+    const result = yield* runCommandInteractive("fzf", args, {
+      stdin: `${lines.join("\n")}\n`,
+    });
     if (result.exitCode !== 0) {
       return "";
     }
