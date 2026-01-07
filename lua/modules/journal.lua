@@ -105,6 +105,30 @@ local function run_j_json(args, on_success)
     handle_output(output, vim.v.shell_error, "")
 end
 
+local function run_j_json_sync(args)
+    local cmd = vim.fn.exepath("j")
+    if cmd == "" then
+        return nil, "j CLI not found in PATH."
+    end
+
+    local cmd_list = { cmd }
+    vim.list_extend(cmd_list, args)
+    table.insert(cmd_list, "--json")
+
+    local output = vim.fn.system(cmd_list)
+    if vim.v.shell_error ~= 0 then
+        local message = output ~= "" and output or "j command failed."
+        return nil, message
+    end
+
+    local ok, data = pcall(vim.json.decode, output or "")
+    if not ok then
+        return nil, "Failed to parse j --json output."
+    end
+
+    return data, nil
+end
+
 local function refresh_buffer(buf)
     if not vim.api.nvim_buf_is_valid(buf) then
         return
@@ -343,42 +367,101 @@ local function open_tags()
     end)
 end
 
+local function build_search_items(matches)
+    local items = {}
+    for _, match in ipairs(matches or {}) do
+        local line = tonumber(match.line)
+        if match.path and line then
+            local text = match.text or ""
+            local label = string.format("%s:%d: %s", match.path, line, text)
+            table.insert(items, {
+                text = label,
+                file = match.path,
+                pos = { line, 1 },
+            })
+        end
+    end
+    return items
+end
+
+local function build_latest_items(entries, limit)
+    local items = {}
+    local count = 0
+    for _, entry in ipairs(entries or {}) do
+        if entry.path then
+            local date = entry.date or vim.fn.fnamemodify(entry.path, ":t:r")
+            local preview = entry.preview or ""
+            local label = preview ~= "" and (date .. "  " .. preview) or date
+            table.insert(items, {
+                text = label,
+                file = entry.path,
+            })
+            count = count + 1
+            if limit and count >= limit then
+                break
+            end
+        end
+    end
+    return items
+end
+
 local function open_search()
     if not ensure_snacks() then
         return
     end
 
-    run_j_json({ "--search" }, function(payload)
-        local matches = payload and payload.matches or {}
-        if not matches or #matches == 0 then
-            notify("No matches found.", vim.log.levels.WARN)
-            return
-        end
+    local payload, err = run_j_json_sync({ "--timeline" })
+    if not payload then
+        notify(err or "Failed to load journal entries.", vim.log.levels.ERROR)
+        return
+    end
 
-        local items = {}
-        for _, match in ipairs(matches) do
-            local line = tonumber(match.line)
-            if match.path and line then
-                local text = match.text or ""
-                local label = string.format("%s:%d: %s", match.path, line, text)
-                table.insert(items, {
-                    text = label,
-                    file = match.path,
-                    pos = { line, 1 },
-                })
+    local latest_items = build_latest_items(payload.entries or {}, 20)
+    local last_query = nil
+    local cached_items = latest_items
+    local error_notified = false
+
+    Snacks.picker.pick({
+        title = "Journal Search",
+        live = true,
+        preview = "file",
+        format = "text",
+        finder = function(_, ctx)
+            local query = vim.trim(ctx.filter.search or "")
+            if query == "" then
+                return latest_items
             end
-        end
+            if query == last_query then
+                return cached_items
+            end
 
-        Snacks.picker.pick({
-            items = items,
-            title = "Journal Search",
-            preview = "file",
-            format = "text",
-            actions = {
-                confirm = confirm_with_zen,
-            },
-        })
-    end)
+            local result, search_err = run_j_json_sync({ "--search", "--query", query })
+            if not result then
+                if not error_notified then
+                    notify(search_err or "j search failed.", vim.log.levels.ERROR)
+                    error_notified = true
+                end
+                last_query = query
+                cached_items = {}
+                return cached_items
+            end
+
+            error_notified = false
+            local items = build_search_items(result.matches or {})
+            last_query = query
+            cached_items = items
+            return items
+        end,
+        filter = {
+            transform = function(_, filter)
+                filter.pattern = filter.search
+                return true
+            end,
+        },
+        actions = {
+            confirm = confirm_with_zen,
+        },
+    })
 end
 
 function M.setup()

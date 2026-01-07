@@ -160,6 +160,11 @@ const searchArg = Options.boolean("search", { aliases: ["s"] }).pipe(
   Options.optional,
   Options.withDescription("Search entries by content (fzf + rg) [full scan]")
 );
+const queryArg = Options.text("query").pipe(
+  Options.withAlias("q"),
+  Options.optional,
+  Options.withDescription("Search query (required for --search --json)")
+);
 const timelineArg = Options.boolean("timeline", { aliases: ["l"] }).pipe(
   Options.optional,
   Options.withDescription("Browse entries chronologically with preview")
@@ -198,6 +203,7 @@ type ParsedOptions = {
   continue: boolean | undefined;
   tag: string | undefined;
   note: string | undefined;
+  query: string | undefined;
   extract: string | undefined;
   sections: string | undefined;
   slug: string | undefined;
@@ -211,6 +217,7 @@ type ParsedOptionValues = {
   continue: Option.Option<boolean>;
   tag: Option.Option<string>;
   note: Option.Option<string>;
+  query: Option.Option<string>;
   extract: Option.Option<string>;
   sections: Option.Option<string>;
   slug: Option.Option<string>;
@@ -219,10 +226,39 @@ type ParsedOptionValues = {
 const isTagRequested = (args: string[]) =>
   args.some((arg) => arg === "-t" || arg === "--tag" || arg.startsWith("--tag="));
 
+const normalizeNoteArgs = (args: string[]) => {
+  const normalized: string[] = [];
+  let noteRequested = false;
+
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i];
+    if (arg === "--note=") {
+      noteRequested = true;
+      continue;
+    }
+    if (arg === "--note") {
+      noteRequested = true;
+      const next = args[i + 1];
+      if (next && !next.startsWith("-")) {
+        normalized.push(arg, next);
+        i += 1;
+      }
+      continue;
+    }
+    if (arg.startsWith("--note=")) {
+      noteRequested = true;
+    }
+    normalized.push(arg);
+  }
+
+  return { normalized, noteRequested };
+};
+
 const parseArgs = (
-  args: string[]
+  args: string[],
+  requests: { tagRequested: boolean; noteRequested: boolean }
 ): Effect.Effect<
-  (ParsedOptions & { tagRequested: boolean }) | null,
+  (ParsedOptions & { tagRequested: boolean; noteRequested: boolean }) | null,
   ValidationError.ValidationError,
   FileSystem.FileSystem | Path.Path | Terminal.Terminal
 > =>
@@ -231,6 +267,7 @@ const parseArgs = (
       json: jsonArg,
       date: dateArg,
       search: searchArg,
+      query: queryArg,
       timeline: timelineArg,
       continue: continueArg,
       tag: tagArg,
@@ -276,10 +313,12 @@ const parseArgs = (
       continue: getOpt(parsed.continue),
       tag: getOpt(parsed.tag),
       note: getOpt(parsed.note),
+      query: getOpt(parsed.query),
       extract: getOpt(parsed.extract),
       sections: getOpt(parsed.sections),
       slug: getOpt(parsed.slug),
-      tagRequested: isTagRequested(args),
+      tagRequested: requests.tagRequested,
+      noteRequested: requests.noteRequested,
     };
   });
 
@@ -287,22 +326,52 @@ export const main = Effect.gen(function* () {
   const rawArgs = process.argv.slice(2);
 
   let offset: number | undefined;
+  let offsetError: string | null = null;
   const filteredArgs: string[] = [];
 
   for (let i = 0; i < rawArgs.length; i++) {
     const arg = rawArgs[i];
     if (/^-\d+$/.test(arg)) {
-      offset = Number(arg.slice(1));
+      const value = Number(arg.slice(1));
+      if (!Number.isFinite(value) || !Number.isInteger(value) || value < 0) {
+        offsetError = `Invalid offset value "${arg}". Expected a non-negative integer.`;
+      } else {
+        offset = value;
+      }
     } else if (arg.startsWith("--offset=")) {
-      offset = Number(arg.slice("--offset=".length));
+      const rawValue = arg.slice("--offset=".length);
+      const value = Number(rawValue);
+      if (!Number.isFinite(value) || !Number.isInteger(value) || value < 0) {
+        offsetError = `Invalid --offset value "${rawValue}". Expected a non-negative integer.`;
+      } else {
+        offset = value;
+      }
+    } else if (arg === "--offset") {
+      const next = rawArgs[i + 1];
+      if (!next) {
+        offsetError = "Missing value for --offset.";
+      } else {
+        const value = Number(next);
+        if (!Number.isFinite(value) || !Number.isInteger(value) || value < 0) {
+          offsetError = `Invalid --offset value "${next}". Expected a non-negative integer.`;
+        } else {
+          offset = value;
+        }
+        i += 1;
+      }
     } else {
       filteredArgs.push(arg);
     }
   }
 
-  const parsed = yield* parseArgs(filteredArgs);
+  const tagRequested = isTagRequested(filteredArgs);
+  const { normalized, noteRequested } = normalizeNoteArgs(filteredArgs);
+  const parsed = yield* parseArgs(normalized, { tagRequested, noteRequested });
   if (!parsed) {
     return;
+  }
+  if (offsetError) {
+    return yield* Effect.fail(new Error(offsetError));
   }
 
   const fs = yield* FileSystem.FileSystem;
@@ -324,7 +393,7 @@ export const main = Effect.gen(function* () {
               ? "sections"
               : parsed.tagRequested
                 ? "tag"
-                : parsed.note
+                : parsed.noteRequested
                   ? "note"
                   : "today";
 
@@ -342,8 +411,14 @@ export const main = Effect.gen(function* () {
         break;
       }
       case "search": {
-        const matches = yield* getSearchMatches();
-        yield* outputJson({ matches });
+        const query = parsed.query?.trim() ?? "";
+        if (!query) {
+          return yield* Effect.fail(
+            new Error("Missing search query. Use --query <text> with --search --json.")
+          );
+        }
+        const matches = yield* getSearchMatches(query);
+        yield* outputJson({ query, matches });
         break;
       }
       case "timeline": {
@@ -425,7 +500,7 @@ export const main = Effect.gen(function* () {
       yield* searchByDate(parsed.tag);
       break;
     case "search":
-      yield* searchByContent();
+      yield* searchByContent(parsed.query);
       break;
     case "timeline":
       yield* timelineView(parsed.tag);

@@ -403,10 +403,20 @@ export const getNotes = () =>
       .sort((a, b) => a.slug.localeCompare(b.slug));
   });
 
-export const getSearchMatches = () =>
+export const getSearchMatches = (query: string) =>
   Effect.gen(function* () {
+    const trimmed = query.trim();
+    if (!trimmed) {
+      return [];
+    }
     const { journalDir } = yield* getJournalPaths;
-    const result = yield* runCommand("rg", ["--json", "--smart-case", "", journalDir]);
+    const result = yield* runCommand("rg", [
+      "--json",
+      "--smart-case",
+      "--",
+      trimmed,
+      journalDir,
+    ]);
     if (!result.stdout) {
       return [];
     }
@@ -521,14 +531,16 @@ export const searchByDate = (tag?: string) =>
     yield* openInEditor(path.join(journalDir, selection));
   });
 
-export const searchByContent = () =>
+export const searchByContent = (query?: string) =>
   Effect.gen(function* () {
     const { journalDir } = yield* getJournalPaths;
+    const trimmed = query?.trim() ?? "";
     const result = yield* runCommand("rg", [
       "--line-number",
       "--color=always",
       "--smart-case",
-      "",
+      "--",
+      trimmed,
       journalDir,
     ]);
 
