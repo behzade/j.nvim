@@ -64,10 +64,16 @@ local function run_j_async(args, on_success)
     end
 end
 
-local function run_j_json(args, on_success)
+local function run_j_json_async(args, on_complete)
     local cmd = vim.fn.exepath("j")
+    local function safe_complete(output, code, stderr)
+        vim.schedule(function()
+            on_complete(output, code, stderr)
+        end)
+    end
+
     if cmd == "" then
-        notify("j CLI not found in PATH.", vim.log.levels.ERROR)
+        safe_complete("", 127, "j CLI not found in PATH.")
         return
     end
 
@@ -75,7 +81,47 @@ local function run_j_json(args, on_success)
     vim.list_extend(cmd_list, args)
     table.insert(cmd_list, "--json")
 
-    local function handle_output(output, code, stderr)
+    if vim.system then
+        vim.system(cmd_list, { text = true }, function(result)
+            safe_complete(result.stdout or "", result.code or 0, result.stderr or "")
+        end)
+        return
+    end
+
+    local stdout = {}
+    local stderr = {}
+    local function collect(data, target)
+        if not data then
+            return
+        end
+        for _, line in ipairs(data) do
+            if line ~= "" then
+                table.insert(target, line)
+            end
+        end
+    end
+
+    local job_id = vim.fn.jobstart(cmd_list, {
+        stdout_buffered = true,
+        stderr_buffered = true,
+        on_stdout = function(_, data, _)
+            collect(data, stdout)
+        end,
+        on_stderr = function(_, data, _)
+            collect(data, stderr)
+        end,
+        on_exit = function(_, code, _)
+            safe_complete(table.concat(stdout, "\n"), code, table.concat(stderr, "\n"))
+        end,
+    })
+
+    if job_id <= 0 then
+        safe_complete("", 1, "Failed to start j command.")
+    end
+end
+
+local function run_j_json(args, on_success)
+    run_j_json_async(args, function(output, code, stderr)
         if code ~= 0 then
             local message = (stderr and stderr ~= "" and stderr) or (output and output ~= "" and output)
                 or "j command failed."
@@ -92,41 +138,7 @@ local function run_j_json(args, on_success)
         if on_success then
             vim.schedule(function() on_success(data) end)
         end
-    end
-
-    if vim.system then
-        vim.system(cmd_list, { text = true }, function(result)
-            handle_output(result.stdout, result.code, result.stderr)
-        end)
-        return
-    end
-
-    local output = vim.fn.system(cmd_list)
-    handle_output(output, vim.v.shell_error, "")
-end
-
-local function run_j_json_sync(args)
-    local cmd = vim.fn.exepath("j")
-    if cmd == "" then
-        return nil, "j CLI not found in PATH."
-    end
-
-    local cmd_list = { cmd }
-    vim.list_extend(cmd_list, args)
-    table.insert(cmd_list, "--json")
-
-    local output = vim.fn.system(cmd_list)
-    if vim.v.shell_error ~= 0 then
-        local message = output ~= "" and output or "j command failed."
-        return nil, message
-    end
-
-    local ok, data = pcall(vim.json.decode, output or "")
-    if not ok then
-        return nil, "Failed to parse j --json output."
-    end
-
-    return data, nil
+    end)
 end
 
 local function refresh_buffer(buf)
@@ -410,58 +422,89 @@ local function open_search()
         return
     end
 
-    local payload, err = run_j_json_sync({ "--timeline" })
-    if not payload then
-        notify(err or "Failed to load journal entries.", vim.log.levels.ERROR)
-        return
-    end
+    run_j_json_async({ "--date", "--limit", "20" }, function(output, code, stderr)
+        if code ~= 0 then
+            local message = (stderr and stderr ~= "" and stderr) or (output and output ~= "" and output)
+                or "Failed to load journal entries."
+            notify(message, vim.log.levels.ERROR)
+            return
+        end
 
-    local latest_items = build_latest_items(payload.entries or {}, 20)
-    local last_query = nil
-    local cached_items = latest_items
-    local error_notified = false
+        local ok, payload = pcall(vim.json.decode, output or "")
+        if not ok then
+            notify("Failed to parse j --json output.", vim.log.levels.ERROR)
+            return
+        end
 
-    Snacks.picker.pick({
-        title = "Journal Search",
-        live = true,
-        preview = "file",
-        format = "text",
-        finder = function(_, ctx)
-            local query = vim.trim(ctx.filter.search or "")
-            if query == "" then
-                return latest_items
-            end
-            if query == last_query then
-                return cached_items
-            end
+        local latest_items = build_latest_items(payload.entries or {}, 20)
+        local last_error = nil
 
-            local result, search_err = run_j_json_sync({ "--search", "--query", query })
-            if not result then
-                if not error_notified then
-                    notify(search_err or "j search failed.", vim.log.levels.ERROR)
-                    error_notified = true
+        Snacks.picker.pick({
+            title = "Journal Search",
+            live = true,
+            preview = "file",
+            format = "text",
+            finder = function(_, ctx)
+                local query = vim.trim(ctx.filter.search or "")
+                if query == "" then
+                    return latest_items
                 end
-                last_query = query
-                cached_items = {}
-                return cached_items
-            end
 
-            error_notified = false
-            local items = build_search_items(result.matches or {})
-            last_query = query
-            cached_items = items
-            return items
-        end,
-        filter = {
-            transform = function(_, filter)
-                filter.pattern = filter.search
-                return true
+                return function(cb)
+                    ctx.async:sleep(200)
+                    if ctx.async:aborted() then
+                        return
+                    end
+
+                    local result = nil
+                    run_j_json_async({ "--search", "--query", query }, function(out, exit_code, err)
+                        result = { out = out, code = exit_code, err = err }
+                        ctx.async:resume()
+                    end)
+                    ctx.async:suspend()
+
+                    if ctx.async:aborted() then
+                        return
+                    end
+
+                    if not result or result.code ~= 0 then
+                        local message = (result and result.err and result.err ~= "" and result.err)
+                            or (result and result.out and result.out ~= "" and result.out)
+                            or "j search failed."
+                        if message ~= last_error then
+                            last_error = message
+                            ctx.async:schedule(function()
+                                notify(message, vim.log.levels.ERROR)
+                            end)
+                        end
+                        return
+                    end
+
+                    last_error = nil
+                    local parsed_ok, data = pcall(vim.json.decode, result.out or "")
+                    if not parsed_ok then
+                        ctx.async:schedule(function()
+                            notify("Failed to parse j --json output.", vim.log.levels.ERROR)
+                        end)
+                        return
+                    end
+
+                    for _, item in ipairs(build_search_items(data.matches or {})) do
+                        cb(item)
+                    end
+                end
             end,
-        },
-        actions = {
-            confirm = confirm_with_zen,
-        },
-    })
+            filter = {
+                transform = function(_, filter)
+                    filter.pattern = filter.search
+                    return true
+                end,
+            },
+            actions = {
+                confirm = confirm_with_zen,
+            },
+        })
+    end)
 end
 
 function M.setup()

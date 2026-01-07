@@ -403,20 +403,20 @@ export const getNotes = () =>
       .sort((a, b) => a.slug.localeCompare(b.slug));
   });
 
-export const getSearchMatches = (query: string) =>
+export const getSearchMatches = (query: string, limit?: number) =>
   Effect.gen(function* () {
     const trimmed = query.trim();
     if (!trimmed) {
       return [];
     }
     const { journalDir } = yield* getJournalPaths;
-    const result = yield* runCommand("rg", [
-      "--json",
-      "--smart-case",
-      "--",
-      trimmed,
-      journalDir,
-    ]);
+    const matchLimit = limit && limit > 0 ? Math.floor(limit) : undefined;
+    const args = ["--json", "--smart-case"];
+    if (matchLimit) {
+      args.push("--max-count", String(matchLimit));
+    }
+    args.push("--", trimmed, journalDir);
+    const result = yield* runCommand("rg", args);
     if (!result.stdout) {
       return [];
     }
@@ -443,6 +443,9 @@ export const getSearchMatches = (query: string) =>
         const text = (event.data.lines?.text ?? "").replace(/\n$/, "");
         if (filePath && lineNumber > 0) {
           matches.push({ path: filePath, line: lineNumber, text });
+          if (matchLimit && matches.length >= matchLimit) {
+            break;
+          }
         }
       } catch {
         continue;

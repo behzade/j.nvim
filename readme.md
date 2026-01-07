@@ -24,6 +24,7 @@ Common usage:
 - `j --sections <source>` list sections for extraction
 - `j --extract <source> --sections=1,3 --slug <target>` extract sections to a note
 - `--json` output structured JSON and skip fzf/nvim (used by the plugin)
+- `--limit <n>` cap JSON list/search results (default 200 for `--search --json`)
 
 Source/section notes:
 - `source` can be a date (`YYYY-MM-DD`), a note slug, `notes/<slug>`, or an absolute path.

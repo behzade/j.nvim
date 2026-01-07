@@ -140,6 +140,8 @@ const compactHelpDoc = (doc: HelpDoc.HelpDoc): HelpDoc.HelpDoc => {
   }
 };
 
+const DEFAULT_SEARCH_LIMIT = 200;
+
 const parseSectionListArg = (value: string) =>
   value
     .split(/[,\s]+/)
@@ -147,6 +149,17 @@ const parseSectionListArg = (value: string) =>
     .filter(Boolean)
     .map((entry) => Number(entry))
     .filter((entry) => Number.isFinite(entry) && entry > 0);
+
+const parseLimitArg = (value: string | undefined): number | null | undefined => {
+  if (!value) {
+    return undefined;
+  }
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || !Number.isInteger(parsed) || parsed < 1) {
+    return null;
+  }
+  return parsed;
+};
 
 const jsonArg = Options.boolean("json").pipe(
   Options.optional,
@@ -164,6 +177,10 @@ const queryArg = Options.text("query").pipe(
   Options.withAlias("q"),
   Options.optional,
   Options.withDescription("Search query (required for --search --json)")
+);
+const limitArg = Options.text("limit").pipe(
+  Options.optional,
+  Options.withDescription("Limit number of results (default 200 for --search --json)")
 );
 const timelineArg = Options.boolean("timeline", { aliases: ["l"] }).pipe(
   Options.optional,
@@ -204,6 +221,7 @@ type ParsedOptions = {
   tag: string | undefined;
   note: string | undefined;
   query: string | undefined;
+  limit: string | undefined;
   extract: string | undefined;
   sections: string | undefined;
   slug: string | undefined;
@@ -218,6 +236,7 @@ type ParsedOptionValues = {
   tag: Option.Option<string>;
   note: Option.Option<string>;
   query: Option.Option<string>;
+  limit: Option.Option<string>;
   extract: Option.Option<string>;
   sections: Option.Option<string>;
   slug: Option.Option<string>;
@@ -268,6 +287,7 @@ const parseArgs = (
       date: dateArg,
       search: searchArg,
       query: queryArg,
+      limit: limitArg,
       timeline: timelineArg,
       continue: continueArg,
       tag: tagArg,
@@ -314,6 +334,7 @@ const parseArgs = (
       tag: getOpt(parsed.tag),
       note: getOpt(parsed.note),
       query: getOpt(parsed.query),
+      limit: getOpt(parsed.limit),
       extract: getOpt(parsed.extract),
       sections: getOpt(parsed.sections),
       slug: getOpt(parsed.slug),
@@ -373,6 +394,13 @@ export const main = Effect.gen(function* () {
   if (offsetError) {
     return yield* Effect.fail(new Error(offsetError));
   }
+  const limitParsed = parseLimitArg(parsed.limit);
+  if (parsed.limit && limitParsed === null) {
+    return yield* Effect.fail(
+      new Error(`Invalid --limit value "${parsed.limit}". Expected a positive integer.`)
+    );
+  }
+  const limit = limitParsed ?? undefined;
 
   const fs = yield* FileSystem.FileSystem;
   const paths = yield* getJournalPaths;
@@ -407,7 +435,8 @@ export const main = Effect.gen(function* () {
       }
       case "date": {
         const entries = yield* getEntries(parsed.tag);
-        yield* outputJson(parsed.tag ? { tag: parsed.tag, entries } : { entries });
+        const limited = limit ? entries.slice(0, limit) : entries;
+        yield* outputJson(parsed.tag ? { tag: parsed.tag, entries: limited } : { entries: limited });
         break;
       }
       case "search": {
@@ -417,13 +446,15 @@ export const main = Effect.gen(function* () {
             new Error("Missing search query. Use --query <text> with --search --json.")
           );
         }
-        const matches = yield* getSearchMatches(query);
-        yield* outputJson({ query, matches });
+        const searchLimit = limit ?? DEFAULT_SEARCH_LIMIT;
+        const matches = yield* getSearchMatches(query, searchLimit);
+        yield* outputJson({ query, limit: searchLimit, matches });
         break;
       }
       case "timeline": {
         const entries = yield* getTimelineEntries(parsed.tag);
-        yield* outputJson(parsed.tag ? { tag: parsed.tag, entries } : { entries });
+        const limited = limit ? entries.slice(0, limit) : entries;
+        yield* outputJson(parsed.tag ? { tag: parsed.tag, entries: limited } : { entries: limited });
         break;
       }
       case "tag": {
@@ -432,7 +463,8 @@ export const main = Effect.gen(function* () {
           yield* outputJson({ tag: parsed.tag, entries });
         } else {
           const tags = yield* listTags();
-          yield* outputJson({ tags });
+          const limited = limit ? tags.slice(0, limit) : tags;
+          yield* outputJson({ tags: limited });
         }
         break;
       }
@@ -442,7 +474,8 @@ export const main = Effect.gen(function* () {
           yield* outputJson({ slug: parsed.note, path });
         } else {
           const notes = yield* getNotes();
-          yield* outputJson({ notes });
+          const limited = limit ? notes.slice(0, limit) : notes;
+          yield* outputJson({ notes: limited });
         }
         break;
       }
