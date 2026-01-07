@@ -161,6 +161,7 @@ const continueArg = Options.boolean("continue", { aliases: ["c"] }).pipe(
   Options.withDescription("Open most recently opened entry (daily or note)")
 );
 const tagArg = Options.text("tag").pipe(
+  Options.withAlias("t"),
   Options.optional,
   Options.withDescription("Browse entries that contain TAG on line 2")
 );
@@ -194,7 +195,12 @@ type ParsedOptions = {
   slug: string | undefined;
 };
 
-const parseArgs = (args: string[]): Effect.Effect<ParsedOptions | null> =>
+const isTagRequested = (args: string[]) =>
+  args.some((arg) => arg === "-t" || arg === "--tag" || arg.startsWith("--tag="));
+
+const parseArgs = (
+  args: string[]
+): Effect.Effect<(ParsedOptions & { tagRequested: boolean }) | null> =>
   Effect.gen(function* () {
     const optionsDef = Options.all({
       json: jsonArg,
@@ -256,6 +262,7 @@ const parseArgs = (args: string[]): Effect.Effect<ParsedOptions | null> =>
       extract: getOpt(parsed.extract),
       sections: getOpt(parsed.sections),
       slug: getOpt(parsed.slug),
+      tagRequested: isTagRequested(args),
     };
   });
 
@@ -298,7 +305,7 @@ export const main = Effect.gen(function* () {
             ? "extract"
             : parsed.sections
               ? "sections"
-              : parsed.tag
+              : parsed.tagRequested
                 ? "tag"
                 : parsed.note
                   ? "note"

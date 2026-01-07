@@ -592,10 +592,28 @@ export const timelineView = (tag?: string) =>
 
 export const tagBrowse = (tag?: string) =>
   Effect.gen(function* () {
+    const { journalDir } = yield* getJournalPaths;
     let selectedTag = tag ?? "";
     if (!selectedTag) {
       const tags = yield* listTags();
-      selectedTag = yield* fzfSelect(tags, { prompt: "Select tag: ", noMulti: true });
+      const preview = [
+        `rg --files-with-matches -g "*.md" -i`,
+        `-e "#{}\\\\b"`,
+        `-e "tags\\\\s*:.*\\\\b{}\\\\b"`,
+        `${journalDir}`,
+        `| head -n 15`,
+        `| sed "s#^${journalDir}/##"`,
+        `| while read -r file; do`,
+        `  title=$(sed -n "1p" "${journalDir}/$file" | sed "s/^# *//");`,
+        '  printf "%s\\t%s\\n" "${file%.md}" "$title";',
+        `done`,
+      ].join(" ");
+      selectedTag = yield* fzfSelect(tags, {
+        prompt: "Select tag: ",
+        preview,
+        previewWindow: "right:65%:wrap",
+        noMulti: true,
+      });
     }
 
     if (!selectedTag) {

@@ -7,7 +7,7 @@
   },
   "scripts": {
     "dev": "bun run src/j/index.bun.ts",
-    "build": "bun build src/j/index.bun.ts --compile --outfile dist/j",
+    "build": "tsc -p tsconfig.json --noEmit && bun build src/j/index.bun.ts --compile --outfile dist/j",
     "install:local": "bun run build && mkdir -p ~/.local/bin && install -m 755 dist/j ~/.local/bin/j"
   },
   "dependencies": {
