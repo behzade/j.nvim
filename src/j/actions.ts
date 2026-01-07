@@ -1,8 +1,5 @@
 import { FileSystem, Path } from "@effect/platform";
 import { Effect } from "effect";
-import * as fs from "node:fs";
-import * as os from "node:os";
-import * as path from "node:path";
 import { commandExists, runCommand, runCommandInteractive } from "../shared/command";
 
 type PathOps = {
@@ -38,19 +35,23 @@ const requireCommand = (name: string) =>
   });
 
 const writeFileAtomic = (filePath: string, content: string) =>
-  Effect.promise(async () => {
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
     const dir = path.dirname(filePath);
-    const tempPath = path.join(
-      dir,
-      `.j-tmp-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`
+    const tempPath = yield* fs.makeTempFile({
+      directory: dir,
+      prefix: ".j-tmp-",
+    });
+    yield* fs.writeFileString(tempPath, content);
+    yield* fs.rename(tempPath, filePath).pipe(
+      Effect.catchAll((error) =>
+        fs
+          .remove(tempPath, { force: true })
+          .pipe(Effect.catchAll(() => Effect.succeed(undefined)))
+          .pipe(Effect.flatMap(() => Effect.fail(error)))
+      )
     );
-    await fs.promises.writeFile(tempPath, content, "utf8");
-    try {
-      await fs.promises.rename(tempPath, filePath);
-    } catch (error) {
-      await fs.promises.unlink(tempPath).catch(() => undefined);
-      throw error;
-    }
   });
 
 export const getJournalPaths = Effect.gen(function* () {
@@ -492,16 +493,15 @@ const withTempFile = <A, E, R>(
   fn: (filePath: string) => Effect.Effect<A, E, R>
 ) =>
   Effect.gen(function* () {
-    const dir = os.tmpdir();
-    const filePath = path.join(
-      dir,
-      `j-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`
-    );
-    yield* Effect.promise(() => fs.promises.writeFile(filePath, content, "utf8"));
+    const fs = yield* FileSystem.FileSystem;
+    const filePath = yield* fs.makeTempFile({ prefix: "j-" });
+    yield* fs.writeFileString(filePath, content);
     try {
       return yield* fn(filePath);
     } finally {
-      yield* Effect.promise(() => fs.promises.unlink(filePath).catch(() => undefined));
+      yield* fs
+        .remove(filePath, { force: true })
+        .pipe(Effect.catchAll(() => Effect.succeed(undefined)));
     }
   });
 
@@ -534,12 +534,13 @@ const fzfSelect = (lines: string[], options: {
     const selection = yield* withTempFile(inputContent, (inputPath) =>
       withTempFile("", (outputPath) =>
         Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
           const escapedArgs = args.map(escapeShell).join(" ");
           const shellCmd = `${escapeShell("fzf")} ${escapedArgs} < ${escapeShell(inputPath)} > ${escapeShell(outputPath)}`;
           yield* runCommandInteractive("sh", ["-c", shellCmd]);
-          return yield* Effect.promise(() =>
-            fs.promises.readFile(outputPath, "utf8").catch(() => "")
-          );
+          return yield* fs
+            .readFileString(outputPath, "utf8")
+            .pipe(Effect.catchAll(() => Effect.succeed("")));
         })
       )
     );
