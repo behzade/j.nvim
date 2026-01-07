@@ -8,9 +8,10 @@
   "scripts": {
     "dev:bun": "bun run src/j/index.bun.ts",
     "dev:node": "node --import tsx src/j/index.node.ts",
-    "build:bun": "bun build src/j/index.bun.ts --compile --outfile dist/j",
-    "build:node": "tsup src/j/index.node.ts --format esm --platform node --out-dir dist --banner '#!/usr/bin/env node'",
-    "install:local": "npm run build:node && mkdir -p ~/.local/bin && install -m 755 dist/index.node.js ~/.local/bin/j"
+    "build:bun": "bun build src/j/index.bun.ts --compile --outfile dist/j-bun",
+    "build:node": "esbuild src/j/index.node.ts --bundle --platform=node --outfile=dist/j --loader:.node=file",
+    "install:local": "npm run build:node && mkdir -p ~/.local/bin && install -m 755 dist/j ~/.local/bin/j",
+    "install:local:bun": "bun run build:bun && mkdir -p ~/.local/bin && install -m 755 dist/j-bun ~/.local/bin/j-bun"
   },
   "dependencies": {
     "@effect/platform": "^0.94.1",
@@ -20,7 +21,9 @@
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
+    "esbuild": "^0.27.2",
     "tsup": "^8.3.5",
-    "tsx": "^4.19.4"
+    "tsx": "^4.19.4",
+    "typescript": "^5.9.3"
   }
 }
